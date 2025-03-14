@@ -352,86 +352,56 @@ func (g *Generator) generateGoCode(specFile string) error {
 		dataSourceRegistrations = "        // No data sources to register\n"
 	}
 
-	// Basic provider structure with dynamic resources and data sources
-	providerContent := fmt.Sprintf(`package main
-
-import (
-    "context"
-    
-    "github.com/hashicorp/terraform-plugin-framework/datasource"
-    "github.com/hashicorp/terraform-plugin-framework/provider"
-    "github.com/hashicorp/terraform-plugin-framework/provider/schema"
-    "github.com/hashicorp/terraform-plugin-framework/resource"
-%s
-%s
-)
-
-// Ensure the implementation satisfies the provider interface
-var _ provider.Provider = &%sProvider{}
-
-// %sProvider is the provider implementation
-type %sProvider struct {
-    // Configuration values
-    version string
-}
-
-// New creates a new provider instance
-func New() provider.Provider {
-    return &%sProvider{
-        version: "0.1",
-    }
-}
-
-// Metadata returns the provider metadata
-func (p *%sProvider) Metadata(_ context.Context, _ provider.MetadataRequest, resp *provider.MetadataResponse) {
-    resp.TypeName = %q
-    resp.Version = p.version
-}
-
-// Schema returns the provider schema
-func (p *%sProvider) Schema(_ context.Context, _ provider.SchemaRequest, resp *provider.SchemaResponse) {
-    resp.Schema = schema.Schema{
-        Description: "The %s provider.",
-        Attributes: map[string]schema.Attribute{
-            // Add provider-level attributes here
-            "api_url": schema.StringAttribute{
-                Description: "API URL for the service",
-                Optional:    true,
-            },
-            "token": schema.StringAttribute{
-                Description: "Authentication token",
-                Optional:    true,
-                Sensitive:   true,
-            },
-        },
-    }
-}
-
-// Configure configures the provider
-func (p *%sProvider) Configure(ctx context.Context, req provider.ConfigureRequest, resp *provider.ConfigureResponse) {
-    // Handle provider configuration here
-    // This would include setting up API clients, etc.
-}
-
-// Resources returns the provider resources
-func (p *%sProvider) Resources(_ context.Context) []func() resource.Resource {
-    return []func() resource.Resource{
-%s
-    }
-}
-
-// DataSources returns the provider data sources
-func (p *%sProvider) DataSources(_ context.Context) []func() datasource.DataSource {
-    return []func() datasource.DataSource{
-%s
-    }
-}
-`, resourceImports, dataSourceImports, g.ProviderName, g.ProviderName, g.ProviderName,
-		g.ProviderName, g.ProviderName, g.ProviderName, g.ProviderName, g.ProviderName,
-		g.ProviderName, g.ProviderName, resourceRegistrations, g.ProviderName, dataSourceRegistrations)
-
+	// Generate the provider implementation
+	providerContent := g.generateProviderCode(resourceImports, resourceRegistrations, dataSourceImports, dataSourceRegistrations)
 	if err := os.WriteFile(filepath.Join(g.OutputDir, "provider.go"), []byte(providerContent), 0644); err != nil {
 		return fmt.Errorf("failed to create provider.go file: %w", err)
+	}
+
+	// Generate the main.go file with entry point
+	mainContent := fmt.Sprintf(`package main
+
+import (
+	"context"
+	"flag"
+	"log"
+
+	"github.com/hashicorp/terraform-plugin-framework/providerserver"
+)
+
+// Generate the Terraform provider documentation using terraform-plugin-docs
+//go:generate go run github.com/hashicorp/terraform-plugin-docs/cmd/tfplugindocs
+
+var (
+	// Version is the provider version
+	Version = "0.1.0"
+)
+
+func main() {
+	var debug bool
+
+	flag.BoolVar(&debug, "debug", false, "set to true to run the provider with support for debuggers")
+	flag.Parse()
+
+	opts := providerserver.ServeOpts{
+		Address: "registry.terraform.io/%s/terraform-provider-%s",
+		Debug:   debug,
+	}
+
+	err := providerserver.Serve(context.Background(), New, opts)
+	if err != nil {
+		log.Fatal(err.Error())
+	}
+}
+`, g.GitHubOrg, g.ProviderName)
+
+	if err := os.WriteFile(filepath.Join(g.OutputDir, "main.go"), []byte(mainContent), 0644); err != nil {
+		return fmt.Errorf("failed to create main.go file: %w", err)
+	}
+
+	// Generate the client package
+	if err := g.generateClientPackage(); err != nil {
+		return fmt.Errorf("failed to generate client package: %w", err)
 	}
 
 	return nil
@@ -500,11 +470,12 @@ func (g *Generator) generateResourceFile(resourceName string, resourceSpec struc
 import (
 	"context"
 	"fmt"
-
+	"net/url"
 	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
 	"github.com/hashicorp/terraform-plugin-framework/types"
+	"github.com/%s/terraform-provider-%s/internal/client"
 )
 
 // Ensure the implementation satisfies the resource interfaces
@@ -520,7 +491,7 @@ type %sResourceModel struct {
 
 // %sResource is the resource implementation
 type %sResource struct {
-	// Add any provider client here
+	client *client.Client
 }
 
 // New%sResource returns a new instance of the resource
@@ -550,8 +521,16 @@ func (r *%sResource) Configure(_ context.Context, req resource.ConfigureRequest,
 		return
 	}
 	
-	// client := req.ProviderData.(YourClientType)
-	// r.client = client
+	client, ok := req.ProviderData.(*client.Client)
+	if !ok {
+		resp.Diagnostics.AddError(
+			"Unexpected Provider Configure Type",
+			fmt.Sprintf("Expected *client.Client, got: %%T. Please report this issue to the provider developers.", req.ProviderData),
+		)
+		return
+	}
+	
+	r.client = client
 }
 
 // Create creates the resource and sets the initial Terraform state
@@ -563,10 +542,33 @@ func (r *%sResource) Create(ctx context.Context, req resource.CreateRequest, res
 		return
 	}
 
-	// TODO: Create the resource using an API client
-	// ...
+	// Prepare API request body from plan
+	requestBody := map[string]interface{}{
+		// Add resource attributes from plan
+		// Example: "name": plan.Name.ValueString(),
+	}
 
-	// Set state
+	// Define the API path - replace with actual path
+	apiPath := "%s"
+	
+	// Replace any path parameters in the URL
+	// Example: pathParams := map[string]string{"id": plan.ID.ValueString()}
+	// apiPath = client.ReplacePathParams(apiPath, pathParams)
+
+	// Call API to create the resource
+	var result map[string]interface{}
+	if err := r.client.Create(ctx, apiPath, requestBody, &result); err != nil {
+		resp.Diagnostics.AddError(
+			fmt.Sprintf("Error creating %s", resourceName),
+			"Could not create resource, unexpected error: "+err.Error(),
+		)
+		return
+	}
+
+	// Map response to state
+	// Example: plan.ID = types.StringValue(result["id"].(string))
+
+	// Set state from plan
 	resp.Diagnostics.Append(resp.State.Set(ctx, &plan)...)
 }
 
@@ -579,10 +581,27 @@ func (r *%sResource) Read(ctx context.Context, req resource.ReadRequest, resp *r
 		return
 	}
 
-	// TODO: Read the resource from the API
-	// ...
+	// Define the API path - replace with actual path
+	apiPath := "%s"
+	
+	// Replace any path parameters in the URL
+	// Example: pathParams := map[string]string{"id": state.ID.ValueString()}
+	// apiPath = client.ReplacePathParams(apiPath, pathParams)
 
-	// Set state
+	// Call API to get the resource
+	var result map[string]interface{}
+	if err := r.client.Read(ctx, apiPath, nil, &result); err != nil {
+		resp.Diagnostics.AddError(
+			fmt.Sprintf("Error reading %s", %q),
+			"Could not read resource, unexpected error: "+err.Error(),
+		)
+		return
+	}
+
+	// Map response to state
+	// Example: state.Name = types.StringValue(result["name"].(string))
+
+	// Set refreshed state
 	resp.Diagnostics.Append(resp.State.Set(ctx, &state)...)
 }
 
@@ -596,10 +615,33 @@ func (r *%sResource) Update(ctx context.Context, req resource.UpdateRequest, res
 		return
 	}
 
-	// TODO: Update the resource using an API client
-	// ...
+	// Prepare API request body from plan
+	requestBody := map[string]interface{}{
+		// Add resource attributes from plan
+		// Example: "name": plan.Name,
+	}
 
-	// Set state
+	// Define the API path - replace with actual path
+	apiPath := "/api/resource/{id}"
+	
+	// Replace any path parameters in the URL
+	// Example: pathParams := map[string]string{"id": state.Id}
+	// apiPath = client.ReplacePathParams(apiPath, pathParams)
+
+	// Call API to update the resource
+	var result map[string]interface{}
+	if err := r.client.Update(ctx, apiPath, requestBody, &result); err != nil {
+		resp.Diagnostics.AddError(
+			"Error updating %s",
+			"Could not update resource, unexpected error: "+err.Error(),
+		)
+		return
+	}
+
+	// Map response to state
+	// Example: plan.LastUpdated = types.StringValue(time.Now().Format(time.RFC3339))
+
+	// Set state from plan
 	resp.Diagnostics.Append(resp.State.Set(ctx, &plan)...)
 }
 
@@ -612,11 +654,24 @@ func (r *%sResource) Delete(ctx context.Context, req resource.DeleteRequest, res
 		return
 	}
 
-	// TODO: Delete the resource using an API client
-	// ...
+	// Define the API path - replace with actual path
+	apiPath := "/api/resource/{id}"
+	
+	// Replace any path parameters in the URL
+	// Example: pathParams := map[string]string{"id": state.Id}
+	// apiPath = client.ReplacePathParams(apiPath, pathParams)
+
+	// Call API to delete the resource
+	if err := r.client.Delete(ctx, apiPath); err != nil {
+		resp.Diagnostics.AddError(
+			"Error deleting %s",
+			"Could not delete resource, unexpected error: "+err.Error(),
+		)
+		return
+	}
 }
 `,
-		resourceName,
+		resourceName, g.GitHubOrg, g.ProviderName,
 		capitalizedResourceName, capitalizedResourceName,
 		capitalizedResourceName, capitalizedResourceName, attrDeclarations,
 		capitalizedResourceName, capitalizedResourceName,
@@ -625,9 +680,17 @@ func (r *%sResource) Delete(ctx context.Context, req resource.DeleteRequest, res
 		capitalizedResourceName, capitalizedResourceName, schemaDefinitions,
 		capitalizedResourceName,
 		capitalizedResourceName, capitalizedResourceName,
+		"/api/resource", // Create path placeholder
+		resourceName,
 		capitalizedResourceName, capitalizedResourceName,
+		"/api/resource/{id}", // Read path placeholder
 		capitalizedResourceName, capitalizedResourceName,
-		capitalizedResourceName, capitalizedResourceName)
+		"/api/resource/{id}", // Update path placeholder
+		resourceName, resourceName,
+		capitalizedResourceName, capitalizedResourceName,
+		"/api/resource/{id}", // Delete path placeholder
+		resourceName, resourceName,
+	)
 
 	return os.WriteFile(filePath, []byte(content), 0644)
 }
@@ -1635,4 +1698,302 @@ func fixSchemaType(schema map[string]interface{}) bool {
 	}
 
 	return modified
+}
+
+// Add a function to generate the API client package
+func (g *Generator) generateClientPackage() error {
+	clientDir := filepath.Join(g.OutputDir, "internal", "client")
+	if err := os.MkdirAll(clientDir, 0755); err != nil {
+		return fmt.Errorf("failed to create client directory: %w", err)
+	}
+
+	// Generate the main client.go file
+	clientFilePath := filepath.Join(clientDir, "client.go")
+	clientContent := fmt.Sprintf(`package client
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"fmt"
+	"io"
+	"net/http"
+	"net/url"
+	"path"
+	"strings"
+	"time"
+)
+
+// Client is the API client for the %s API
+type Client struct {
+	baseURL    string
+	httpClient *http.Client
+	token      string
+}
+
+// Config contains the configuration for the client
+type Config struct {
+	APIURL    string
+	Token     string
+	Timeout   time.Duration
+}
+
+// New creates a new API client
+func New(config *Config) *Client {
+	if config.Timeout == 0 {
+		config.Timeout = 30 * time.Second
+	}
+
+	return &Client{
+		baseURL: strings.TrimRight(config.APIURL, "/"),
+		httpClient: &http.Client{
+			Timeout: config.Timeout,
+		},
+		token: config.Token,
+	}
+}
+
+// DoRequest makes an HTTP request to the API
+func (c *Client) DoRequest(ctx context.Context, method, urlPath string, body interface{}, params url.Values, result interface{}) error {
+	// Build the full URL
+	u, err := url.Parse(c.baseURL)
+	if err != nil {
+		return fmt.Errorf("invalid base URL: %%w", err)
+	}
+	u.Path = path.Join(u.Path, urlPath)
+	
+	if params != nil {
+		u.RawQuery = params.Encode()
+	}
+
+	// Prepare the request body if provided
+	var reqBody io.Reader
+	if body != nil {
+		jsonBody, err := json.Marshal(body)
+		if err != nil {
+			return fmt.Errorf("failed to marshal request body: %%w", err)
+		}
+		reqBody = bytes.NewBuffer(jsonBody)
+	}
+
+	// Create the request
+	req, err := http.NewRequestWithContext(ctx, method, u.String(), reqBody)
+	if err != nil {
+		return fmt.Errorf("failed to create request: %%w", err)
+	}
+
+	// Set headers
+	req.Header.Set("Content-Type", "application/json")
+	if c.token != "" {
+		req.Header.Set("Authorization", "Bearer "+c.token)
+	}
+
+	// Execute the request
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("request failed: %%w", err)
+	}
+	defer resp.Body.Close()
+
+	// Read the response body
+	respBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return fmt.Errorf("failed to read response body: %%w", err)
+	}
+
+	// Check for error status codes
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return fmt.Errorf("API request failed with status %%d: %%s", resp.StatusCode, string(respBody))
+	}
+
+	// Parse the response if a result struct is provided
+	if result != nil && len(respBody) > 0 {
+		if err := json.Unmarshal(respBody, result); err != nil {
+			return fmt.Errorf("failed to unmarshal response: %%w", err)
+		}
+	}
+
+	return nil
+}
+
+// Create makes a POST request to create a resource
+func (c *Client) Create(ctx context.Context, path string, body interface{}, result interface{}) error {
+	return c.DoRequest(ctx, http.MethodPost, path, body, nil, result)
+}
+
+// Read makes a GET request to retrieve a resource
+func (c *Client) Read(ctx context.Context, path string, params url.Values, result interface{}) error {
+	return c.DoRequest(ctx, http.MethodGet, path, nil, params, result)
+}
+
+// Update makes a PUT request to update a resource
+func (c *Client) Update(ctx context.Context, path string, body interface{}, result interface{}) error {
+	return c.DoRequest(ctx, http.MethodPut, path, body, nil, result)
+}
+
+// Delete makes a DELETE request to delete a resource
+func (c *Client) Delete(ctx context.Context, path string) error {
+	return c.DoRequest(ctx, http.MethodDelete, path, nil, nil, nil)
+}
+
+// ReplacePathParams replaces path parameters in a URL path
+func ReplacePathParams(urlPath string, params map[string]string) string {
+	result := urlPath
+	for key, value := range params {
+		result = strings.ReplaceAll(result, "{"+key+"}", value)
+	}
+	return result
+}
+`, g.ProviderName)
+
+	if err := os.WriteFile(clientFilePath, []byte(clientContent), 0644); err != nil {
+		return fmt.Errorf("failed to write client.go file: %w", err)
+	}
+
+	return nil
+}
+
+// Update the provider.go generation to include client initialization
+func (g *Generator) generateProviderCode(resourceImports, resourceRegistrations, dataSourceImports, dataSourceRegistrations string) string {
+	return fmt.Sprintf(`package main
+
+import (
+    "context"
+    "os"
+    
+    "github.com/hashicorp/terraform-plugin-framework/datasource"
+    "github.com/hashicorp/terraform-plugin-framework/path"
+    "github.com/hashicorp/terraform-plugin-framework/provider"
+    "github.com/hashicorp/terraform-plugin-framework/provider/schema"
+    "github.com/hashicorp/terraform-plugin-framework/resource"
+    "github.com/hashicorp/terraform-plugin-framework/types"
+    "github.com/%s/terraform-provider-%s/internal/client"
+%s
+%s
+)
+
+// Ensure the implementation satisfies the provider interface
+var _ provider.Provider = &%sProvider{}
+
+// %sProviderModel describes the provider data model
+type %sProviderModel struct {
+	APIURL types.String `+"`tfsdk:\"api_url\"`"+`
+	Token  types.String `+"`tfsdk:\"token\"`"+`
+}
+
+// %sProvider is the provider implementation
+type %sProvider struct {
+    // Configuration values
+    version string
+}
+
+// New creates a new provider instance
+func New() provider.Provider {
+    return &%sProvider{
+        version: "0.1",
+    }
+}
+
+// Metadata returns the provider metadata
+func (p *%sProvider) Metadata(_ context.Context, _ provider.MetadataRequest, resp *provider.MetadataResponse) {
+    resp.TypeName = %q
+    resp.Version = p.version
+}
+
+// Schema returns the provider schema
+func (p *%sProvider) Schema(_ context.Context, _ provider.SchemaRequest, resp *provider.SchemaResponse) {
+    resp.Schema = schema.Schema{
+        Description: "The %s provider.",
+        Attributes: map[string]schema.Attribute{
+            "api_url": schema.StringAttribute{
+                Description: "API URL for the service. Can also be set with %s_API_URL environment variable.",
+                Optional:    true,
+            },
+            "token": schema.StringAttribute{
+                Description: "Authentication token. Can also be set with %s_TOKEN environment variable.",
+                Optional:    true,
+                Sensitive:   true,
+            },
+        },
+    }
+}
+
+// Configure configures the provider
+func (p *%sProvider) Configure(ctx context.Context, req provider.ConfigureRequest, resp *provider.ConfigureResponse) {
+    // Retrieve provider data from configuration
+    var config %sProviderModel
+    resp.Diagnostics.Append(req.Config.Get(ctx, &config)...)
+    if resp.Diagnostics.HasError() {
+        return
+    }
+
+    // Default values based on environment variables
+    apiURL := os.Getenv("%s_API_URL")
+    token := os.Getenv("%s_TOKEN")
+
+    // Override with configuration values if provided
+    if !config.APIURL.IsNull() {
+        apiURL = config.APIURL.ValueString()
+    }
+
+    if !config.Token.IsNull() {
+        token = config.Token.ValueString()
+    }
+
+    // Validate configuration
+    if apiURL == "" {
+        resp.Diagnostics.AddError(
+            "Missing API URL Configuration",
+            "The provider cannot create the API client as the API URL is not configured. "+
+                "Please set the api_url attribute in the provider configuration or set the %s_API_URL environment variable.",
+        )
+    }
+
+    if token == "" {
+        resp.Diagnostics.AddAttributeWarning(
+            path.Root("token"),
+            "Missing API Token",
+            "The API token is not configured. This might be required for authentication. "+
+                "Please set the token attribute in the provider configuration or set the %s_TOKEN environment variable.",
+        )
+    }
+
+    if resp.Diagnostics.HasError() {
+        return
+    }
+
+    // Create API client
+    apiClient := client.New(&client.Config{
+        APIURL: apiURL,
+        Token:  token,
+    })
+
+    // Make the client available to resources and data sources
+    resp.ResourceData = apiClient
+    resp.DataSourceData = apiClient
+}
+
+// Resources returns the provider resources
+func (p *%sProvider) Resources(_ context.Context) []func() resource.Resource {
+    return []func() resource.Resource{
+%s
+    }
+}
+
+// DataSources returns the provider data sources
+func (p *%sProvider) DataSources(_ context.Context) []func() datasource.DataSource {
+    return []func() datasource.DataSource{
+%s
+    }
+}
+`, g.GitHubOrg, g.ProviderName, resourceImports, dataSourceImports,
+		g.ProviderName, g.ProviderName, g.ProviderName,
+		g.ProviderName, g.ProviderName, g.ProviderName,
+		g.ProviderName, g.ProviderName, g.ProviderName,
+		g.ProviderName, strings.ToUpper(g.ProviderName),
+		strings.ToUpper(g.ProviderName), g.ProviderName,
+		g.ProviderName, strings.ToUpper(g.ProviderName),
+		strings.ToUpper(g.ProviderName), strings.ToUpper(g.ProviderName),
+		strings.ToUpper(g.ProviderName), g.ProviderName,
+		resourceRegistrations, g.ProviderName, dataSourceRegistrations)
 }

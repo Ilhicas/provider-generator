@@ -1,3 +1,5 @@
+# WIP This project is a work in progress - And is not ready for use
+
 # Provider Generator
 
 A CLI tool to generate Terraform provider Go code from OpenAPI specifications.
