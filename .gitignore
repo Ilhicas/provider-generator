@@ -1,0 +1,60 @@
+# Golang specific
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+*.test
+*.out
+*.prof
+*.cov
+/vendor/
+/Godeps/
+
+
+# Output directory
+/out/
+out
+
+# Binary output directories
+bin/
+/bin/
+/dist/
+
+# Test binary, built with `go test -c`
+*.test
+
+# Go workspace file
+go.work
+
+# Log files
+*.log
+
+# Environment variables
+.env
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+
+# IDE specific files
+.idea/
+.vscode/
+*.swp
+*.swo
+*.sublime-workspace
+*.sublime-project
+.DS_Store
+
+# Dependency directories (if not using modules)
+/pkg/
+
+# If using modules and want to ignore the cache
+.pkg-cache/
+
+# Debug files
+debug
+__debug_bin
+
+# Generated terraform provider files
+terraform-provider-*
